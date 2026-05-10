@@ -58,7 +58,8 @@ class VisualConfigurator:
             except: pass
         
         self.haptic_val = tk.DoubleVar(value=1.4)
-        self.fov_val = tk.DoubleVar(value=1.0)
+        self.fov_x_val = tk.DoubleVar(value=1.0)
+        self.fov_y_val = tk.DoubleVar(value=1.0)
         self.stick_mode = tk.StringVar(value="0")
         self.steamvr_mode = tk.BooleanVar(value=False)
         self.revive_path = tk.StringVar(value="")
@@ -128,6 +129,18 @@ class VisualConfigurator:
         if self.steamvr_mode.get():
             # We no longer need to copy the DLL. The C++ mod will dynamically load it from C:\Program Files\Revive
             pass
+
+        # Clean up any leftover Revive DLLs from old manual installations
+        # If these are left in the game folder, they will force the game into Revive mode
+        # even when SteamVR mode is disabled in this mod.
+        revive_files = ["LibOVRRT64_1.dll", "LibRevive64_1.dll", "LibReviveXR64.dll", "LibRevive64.dll", "openvr_api.dll"]
+        for f in revive_files:
+            fpath = os.path.join(self.game_path, f)
+            if os.path.exists(fpath):
+                try:
+                    os.remove(fpath)
+                except:
+                    pass
 
     def on_steamvr_toggle(self):
         if not self.steamvr_mode.get():
@@ -232,7 +245,11 @@ class VisualConfigurator:
                     if "=" in line:
                         key, val = [x.strip() for x in line.split("=", 1)]
                         if key == "HapticStrength": self.haptic_val.set(float(val))
-                        elif key == "FovMultiplier": self.fov_val.set(float(val))
+                        elif key == "FovMultiplier":
+                            self.fov_x_val.set(float(val))
+                            self.fov_y_val.set(float(val))
+                        elif key == "FovMultiplierX": self.fov_x_val.set(float(val))
+                        elif key == "FovMultiplierY": self.fov_y_val.set(float(val))
                         elif key == "StickRemapMode": self.stick_mode.set(val)
                         elif key == "SteamVRMode": self.steamvr_mode.set(val in ("1", "true"))
                         elif key == "RevivePath": self.revive_path.set(val)
@@ -248,7 +265,8 @@ class VisualConfigurator:
             lines = [
                 "# EchoVR Haptics & FOV Mod Config\n",
                 f"HapticStrength = {self.haptic_val.get():.2f}\n",
-                f"FovMultiplier = {self.fov_val.get():.2f}\n",
+                f"FovMultiplierX = {self.fov_x_val.get():.2f}\n",
+                f"FovMultiplierY = {self.fov_y_val.get():.2f}\n",
                 f"StickRemapMode = {self.stick_mode.get()}\n",
                 f"SteamVRMode = {'1' if self.steamvr_mode.get() else '0'}\n",
                 f"RevivePath = {self.revive_path.get()}\n",
@@ -328,8 +346,11 @@ class VisualConfigurator:
         # FOV
         f_frame = tk.Frame(bottom, bg=COLORS["bg"])
         f_frame.pack(side="left", fill="x", expand=True)
-        tk.Label(f_frame, text="FOV MULTIPLIER", fg=COLORS["dim_text"], bg=COLORS["bg"], font=("Segoe UI", 9, "bold")).pack(anchor="w")
-        tk.Scale(f_frame, from_=0.5, to=2.0, resolution=0.05, orient="horizontal", variable=self.fov_val,
+        tk.Label(f_frame, text="FOV X (WIDTH)", fg=COLORS["dim_text"], bg=COLORS["bg"], font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        tk.Scale(f_frame, from_=0.5, to=2.0, resolution=0.05, orient="horizontal", variable=self.fov_x_val,
+                 bg=COLORS["bg"], fg=COLORS["text"], highlightthickness=0, troughcolor=COLORS["border"]).pack(fill="x")
+        tk.Label(f_frame, text="FOV Y (HEIGHT)", fg=COLORS["dim_text"], bg=COLORS["bg"], font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(5, 0))
+        tk.Scale(f_frame, from_=0.5, to=2.0, resolution=0.05, orient="horizontal", variable=self.fov_y_val,
                  bg=COLORS["bg"], fg=COLORS["text"], highlightthickness=0, troughcolor=COLORS["border"]).pack(fill="x")
 
         # SteamVR Mode Toggle

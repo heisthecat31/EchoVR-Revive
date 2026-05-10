@@ -10,12 +10,25 @@
 #include <algorithm>
 #include <shlwapi.h>
 #include <tlhelp32.h>
+#include <cstdio>
+
+static void DebugLog(const char* fmt, ...) {
+    FILE* f = fopen("echovr_mod_debug.log", "a");
+    if (!f) return;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(f, fmt, args);
+    fprintf(f, "\n");
+    va_end(args);
+    fclose(f);
+}
 
 #pragma comment(lib, "detours.lib")
 #pragma comment(lib, "shlwapi.lib")
 
 float g_HapticStrength = 1.4f;   
-float g_FovMultiplier  = 1.0f; 
+float g_FovMultiplierX = 1.0f;
+float g_FovMultiplierY = 1.0f;
 bool  g_SteamVRMode    = false;  // When true, redirect LibOVR to Revive
 std::wstring g_RevivePath;       // Custom Revive installation path
 
@@ -38,11 +51,24 @@ const int ovrControllerType_Touch  = 0x0003;
 typedef int ovrResult;
 typedef void* ovrSession;
 typedef int ovrControllerType;
-typedef int ovrHmdType; 
+typedef int ovrHmdType;
+typedef int ovrEyeType;
 
 struct ovrVector2f { float x, y; };
+struct ovrVector3f { float x, y, z; };
+struct ovrQuatf { float x, y, z, w; };
+struct ovrPosef { ovrQuatf Orientation; ovrVector3f Position; };
 struct ovrSizei { int w, h; };
+struct ovrRecti { ovrVector2f Pos; ovrSizei Size; };
 struct ovrFovPort { float UpTan; float DownTan; float LeftTan; float RightTan; };
+
+struct ovrEyeRenderDesc {
+    ovrEyeType Eye;
+    ovrFovPort Fov;
+    ovrRecti DistortedViewport;
+    ovrVector2f PixelsPerTanAngleAtCenter;
+    ovrPosef HmdToEyePose;
+};
 
 struct ovrHapticsBuffer {
     const void* Samples;
@@ -89,13 +115,15 @@ struct ovrInputState {
 
 typedef ovrResult(__cdecl* pf_SetControllerVibration)(ovrSession, ovrControllerType, float, float);
 typedef ovrResult(__cdecl* pf_SubmitControllerVibration)(ovrSession, ovrControllerType, const ovrHapticsBuffer*);
-typedef ovrHmdDesc(__cdecl* pf_GetHmdDesc)(ovrHmdDesc*, ovrSession);
+typedef ovrHmdDesc*(__cdecl* pf_GetHmdDesc)(ovrHmdDesc*, ovrSession);
 typedef ovrResult(__cdecl* pf_GetInputState)(ovrSession, ovrControllerType, ovrInputState*);
+typedef ovrEyeRenderDesc*(__cdecl* pf_GetRenderDesc)(ovrEyeRenderDesc*, ovrSession, ovrEyeType, ovrFovPort);
 
 pf_SetControllerVibration Real_SetControllerVibration = nullptr;
 pf_SubmitControllerVibration Real_SubmitControllerVibration = nullptr;
 pf_GetHmdDesc Real_GetHmdDesc = nullptr;
 pf_GetInputState Real_GetInputState = nullptr;
+pf_GetRenderDesc Real_GetRenderDesc = nullptr;
 
 // =============================================================
 // STEAMVR / REVIVE INTEGRATION
@@ -120,18 +148,15 @@ static bool IsProcessRunning(const wchar_t* processName) {
     return found;
 }
 
-// Launch SteamVR and wait for it to be ready
-static void EnsureSteamVRRunning() {
-    if (IsProcessRunning(L"vrserver.exe")) return; // Already running
-
-    // Try launching via Steam protocol
-    ShellExecuteW(NULL, L"open", L"steam://run/250820", NULL, NULL, SW_SHOWNORMAL);
-
-    // Wait up to 30 seconds for vrserver.exe to appear
-    for (int i = 0; i < 300; i++) {
-        if (IsProcessRunning(L"vrserver.exe")) return;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+// Check if SteamVR is running. If not, show an error and terminate the game.
+static bool EnsureSteamVRRunning() {
+    if (IsProcessRunning(L"vrserver.exe")) {
+        return true; 
     }
+    
+    MessageBoxA(NULL, "Please Launch SteamVR before opening echo", "EchoVR-Revive", MB_OK | MB_ICONERROR);
+    ExitProcess(1);
+    return false;
 }
 
 // Inject Revive into the process
@@ -234,7 +259,9 @@ void LoadConfig() {
                 key = Trim(key);
                 value = Trim(value);
                 if (key == "HapticStrength") g_HapticStrength = std::stof(value);
-                else if (key == "FovMultiplier") g_FovMultiplier = std::stof(value);
+                else if (key == "FovMultiplier") { g_FovMultiplierX = std::stof(value); g_FovMultiplierY = std::stof(value); }
+                else if (key == "FovMultiplierX") g_FovMultiplierX = std::stof(value);
+                else if (key == "FovMultiplierY") g_FovMultiplierY = std::stof(value);
                 else if (key == "StickRemapMode") g_StickRemapMode = std::stoi(value);
                 else if (key == "SteamVRMode") g_SteamVRMode = (value == "1" || value == "true");
                 else if (key == "RevivePath") {
@@ -284,7 +311,8 @@ void LoadConfig() {
         }
     }
     if (g_HapticStrength > 5.0f) g_HapticStrength = 5.0f;
-    if (g_FovMultiplier < 0.1f) g_FovMultiplier = 1.0f; 
+    if (g_FovMultiplierX < 0.1f) g_FovMultiplierX = 1.0f; 
+    if (g_FovMultiplierY < 0.1f) g_FovMultiplierY = 1.0f; 
 }
 
 // =============================================================
@@ -319,16 +347,47 @@ ovrResult __cdecl Hooked_SubmitControllerVibration(ovrSession session, ovrContro
     else Real_SetControllerVibration(session, type, 0.0f, 0.0f);
     return 0; 
 }
-void __cdecl Hooked_GetHmdDesc(ovrHmdDesc* retbuf, ovrSession session) {
+ovrHmdDesc* __cdecl Hooked_GetHmdDesc(ovrHmdDesc* retbuf, ovrSession session) {
+    DebugLog("[FOV] Hooked_GetHmdDesc CALLED, FovX=%.2f FovY=%.2f", g_FovMultiplierX, g_FovMultiplierY);
     Real_GetHmdDesc(retbuf, session);
-    if (g_FovMultiplier != 1.0f) {
+    if (g_FovMultiplierX != 1.0f || g_FovMultiplierY != 1.0f) {
+        DebugLog("[FOV] Before: DefaultEyeFov[0] Up=%.4f Down=%.4f Left=%.4f Right=%.4f",
+            retbuf->DefaultEyeFov[0].UpTan, retbuf->DefaultEyeFov[0].DownTan,
+            retbuf->DefaultEyeFov[0].LeftTan, retbuf->DefaultEyeFov[0].RightTan);
         for (int i = 0; i < 2; ++i) {
-            retbuf->DefaultEyeFov[i].UpTan *= g_FovMultiplier;
-            retbuf->DefaultEyeFov[i].DownTan *= g_FovMultiplier;
-            retbuf->DefaultEyeFov[i].LeftTan *= g_FovMultiplier;
-            retbuf->DefaultEyeFov[i].RightTan *= g_FovMultiplier;
+            retbuf->DefaultEyeFov[i].UpTan *= g_FovMultiplierY;
+            retbuf->DefaultEyeFov[i].DownTan *= g_FovMultiplierY;
+            retbuf->DefaultEyeFov[i].LeftTan *= g_FovMultiplierX;
+            retbuf->DefaultEyeFov[i].RightTan *= g_FovMultiplierX;
+            retbuf->MaxEyeFov[i].UpTan *= g_FovMultiplierY;
+            retbuf->MaxEyeFov[i].DownTan *= g_FovMultiplierY;
+            retbuf->MaxEyeFov[i].LeftTan *= g_FovMultiplierX;
+            retbuf->MaxEyeFov[i].RightTan *= g_FovMultiplierX;
         }
+        DebugLog("[FOV] After: DefaultEyeFov[0] Up=%.4f Down=%.4f Left=%.4f Right=%.4f",
+            retbuf->DefaultEyeFov[0].UpTan, retbuf->DefaultEyeFov[0].DownTan,
+            retbuf->DefaultEyeFov[0].LeftTan, retbuf->DefaultEyeFov[0].RightTan);
     }
+    return retbuf;
+}
+
+ovrEyeRenderDesc* __cdecl Hooked_GetRenderDesc(ovrEyeRenderDesc* retbuf, ovrSession session, ovrEyeType eyeType, ovrFovPort fov) {
+    DebugLog("[FOV] Hooked_GetRenderDesc CALLED, eye=%d, inputFov Up=%.4f Down=%.4f Left=%.4f Right=%.4f",
+        eyeType, fov.UpTan, fov.DownTan, fov.LeftTan, fov.RightTan);
+    if (g_FovMultiplierX != 1.0f || g_FovMultiplierY != 1.0f) {
+        fov.UpTan *= g_FovMultiplierY;
+        fov.DownTan *= g_FovMultiplierY;
+        fov.LeftTan *= g_FovMultiplierX;
+        fov.RightTan *= g_FovMultiplierX;
+    }
+    Real_GetRenderDesc(retbuf, session, eyeType, fov);
+    if (g_FovMultiplierX != 1.0f || g_FovMultiplierY != 1.0f) {
+        retbuf->Fov.UpTan *= g_FovMultiplierY;
+        retbuf->Fov.DownTan *= g_FovMultiplierY;
+        retbuf->Fov.LeftTan *= g_FovMultiplierX;
+        retbuf->Fov.RightTan *= g_FovMultiplierX;
+    }
+    return retbuf;
 }
 
 
@@ -420,46 +479,48 @@ void InstallHooks() {
         if (!hLibOVR) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         attempts++;
     }
+    DebugLog("[HOOKS] LibOVRRT64_1.dll search: %s (after %d attempts)", hLibOVR ? "FOUND" : "NOT FOUND", attempts);
     if (!hLibOVR) return;
 
     Real_SubmitControllerVibration = (pf_SubmitControllerVibration)GetProcAddress(hLibOVR, "ovr_SubmitControllerVibration");
     Real_GetInputState = (pf_GetInputState)GetProcAddress(hLibOVR, "ovr_GetInputState");
+    Real_GetHmdDesc = (pf_GetHmdDesc)GetProcAddress(hLibOVR, "ovr_GetHmdDesc");
+    Real_GetRenderDesc = (pf_GetRenderDesc)GetProcAddress(hLibOVR, "ovr_GetRenderDesc");
+
+    DebugLog("[HOOKS] Function addresses: SubmitVib=%p, InputState=%p, HmdDesc=%p, RenderDesc=%p",
+        Real_SubmitControllerVibration, Real_GetInputState, Real_GetHmdDesc, Real_GetRenderDesc);
 
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
     if (Real_SubmitControllerVibration) DetourAttach(&(PVOID&)Real_SubmitControllerVibration, Hooked_SubmitControllerVibration);
     if (Real_GetInputState) DetourAttach(&(PVOID&)Real_GetInputState, Hooked_GetInputState);
-    DetourTransactionCommit();
+    if (Real_GetHmdDesc) DetourAttach(&(PVOID&)Real_GetHmdDesc, Hooked_GetHmdDesc);
+    if (Real_GetRenderDesc) DetourAttach(&(PVOID&)Real_GetRenderDesc, Hooked_GetRenderDesc);
+    LONG result = DetourTransactionCommit();
+    DebugLog("[HOOKS] DetourTransactionCommit result: %ld", result);
+    DebugLog("[HOOKS] InstallHooks complete.");
+}
 
-    HMODULE hGame = GetModuleHandleA(nullptr);
-    BYTE* base = (BYTE*)hGame;
-    IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
-    IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
-    IMAGE_IMPORT_DESCRIPTOR* imp = (IMAGE_IMPORT_DESCRIPTOR*)(base +
-        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+typedef int (WINAPI *pf_MessageBoxW)(HWND hWnd, LPCWSTR lpText, LPCWSTR lpCaption, UINT uType);
+typedef int (WINAPI *pf_MessageBoxA)(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType);
 
-    for (; imp->Name; imp++) {
-        const char* dllName = (const char*)(base + imp->Name);
-        if (_stricmp(dllName, "LibOVRRT64_1.dll") != 0) continue;
+pf_MessageBoxW Real_MessageBoxW = MessageBoxW;
+pf_MessageBoxA Real_MessageBoxA = MessageBoxA;
 
-        IMAGE_THUNK_DATA* origThunk = (IMAGE_THUNK_DATA*)(base + imp->OriginalFirstThunk);
-        IMAGE_THUNK_DATA* iatThunk = (IMAGE_THUNK_DATA*)(base + imp->FirstThunk);
-
-        for (; origThunk->u1.AddressOfData; origThunk++, iatThunk++) {
-            if (IMAGE_SNAP_BY_ORDINAL(origThunk->u1.Ordinal)) continue;
-            IMAGE_IMPORT_BY_NAME* ibn = (IMAGE_IMPORT_BY_NAME*)(base + origThunk->u1.AddressOfData);
-            if (strcmp((char*)ibn->Name, "ovr_GetHmdDesc") != 0) continue;
-
-            Real_GetHmdDesc = (pf_GetHmdDesc)iatThunk->u1.Function;
-
-            DWORD oldProtect;
-            VirtualProtect(&iatThunk->u1.Function, sizeof(PVOID), PAGE_READWRITE, &oldProtect);
-            iatThunk->u1.Function = (ULONG_PTR)Hooked_GetHmdDesc;
-            VirtualProtect(&iatThunk->u1.Function, sizeof(PVOID), oldProtect, &oldProtect);
-            break;
-        }
-        break;
+int WINAPI Hooked_MessageBoxW(HWND hWnd, LPCWSTR lpText, LPCWSTR lpCaption, UINT uType) {
+    if (lpText && wcsstr(lpText, L"Failed to initialize Oculus VR session")) {
+        LPCWSTR newText = L"Failed to initialize VR session.\n\nPlease ensure SteamVR is fully loaded and that your headset is properly connected and detected by SteamVR.";
+        return Real_MessageBoxW(hWnd, newText, lpCaption, uType);
     }
+    return Real_MessageBoxW(hWnd, lpText, lpCaption, uType);
+}
+
+int WINAPI Hooked_MessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType) {
+    if (lpText && strstr(lpText, "Failed to initialize Oculus VR session")) {
+        LPCSTR newText = "Failed to initialize VR session.\n\nPlease ensure SteamVR is fully loaded and that your headset is properly connected and detected by SteamVR.";
+        return Real_MessageBoxA(hWnd, newText, lpCaption, uType);
+    }
+    return Real_MessageBoxA(hWnd, lpText, lpCaption, uType);
 }
 
 void InitializeEarly(HMODULE hModule) {
@@ -467,11 +528,18 @@ void InitializeEarly(HMODULE hModule) {
     LoadConfig();
     
     if (g_SteamVRMode) {
-        EnsureSteamVRRunning();
-        // Give SteamVR a moment to fully initialize its OpenXR runtime
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        
-        InjectRevive();
+        // Intercept native Oculus error messages
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourAttach(&(PVOID&)Real_MessageBoxA, Hooked_MessageBoxA);
+        DetourAttach(&(PVOID&)Real_MessageBoxW, Hooked_MessageBoxW);
+        DetourTransactionCommit();
+
+        if (EnsureSteamVRRunning()) {
+            // Give SteamVR a moment to fully initialize its OpenXR runtime
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            InjectRevive();
+        }
     }
 }
 
