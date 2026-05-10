@@ -146,9 +146,6 @@
     <ClCompile Include="..\..\patches.cpp" />
     <ClCompile Include="dllmain.cpp" />
   </ItemGroup>
-  <ItemGroup>
-    <Library Include="..\..\detours.lib" />
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
