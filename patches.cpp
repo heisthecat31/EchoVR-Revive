@@ -89,7 +89,7 @@ struct ovrInputState {
 
 typedef ovrResult(__cdecl* pf_SetControllerVibration)(ovrSession, ovrControllerType, float, float);
 typedef ovrResult(__cdecl* pf_SubmitControllerVibration)(ovrSession, ovrControllerType, const ovrHapticsBuffer*);
-typedef ovrHmdDesc(__cdecl* pf_GetHmdDesc)(ovrSession);
+typedef ovrHmdDesc(__cdecl* pf_GetHmdDesc)(ovrHmdDesc*, ovrSession);
 typedef ovrResult(__cdecl* pf_GetInputState)(ovrSession, ovrControllerType, ovrInputState*);
 
 pf_SetControllerVibration Real_SetControllerVibration = nullptr;
@@ -319,19 +319,18 @@ ovrResult __cdecl Hooked_SubmitControllerVibration(ovrSession session, ovrContro
     else Real_SetControllerVibration(session, type, 0.0f, 0.0f);
     return 0; 
 }
-
-ovrHmdDesc __cdecl Hooked_GetHmdDesc(ovrSession session) {
-    ovrHmdDesc desc = Real_GetHmdDesc(session);
+void __cdecl Hooked_GetHmdDesc(ovrHmdDesc* retbuf, ovrSession session) {
+    Real_GetHmdDesc(retbuf, session);
     if (g_FovMultiplier != 1.0f) {
         for (int i = 0; i < 2; ++i) {
-            desc.DefaultEyeFov[i].UpTan    *= g_FovMultiplier;
-            desc.DefaultEyeFov[i].DownTan  *= g_FovMultiplier;
-            desc.DefaultEyeFov[i].LeftTan  *= g_FovMultiplier;
-            desc.DefaultEyeFov[i].RightTan *= g_FovMultiplier;
+            retbuf->DefaultEyeFov[i].UpTan *= g_FovMultiplier;
+            retbuf->DefaultEyeFov[i].DownTan *= g_FovMultiplier;
+            retbuf->DefaultEyeFov[i].LeftTan *= g_FovMultiplier;
+            retbuf->DefaultEyeFov[i].RightTan *= g_FovMultiplier;
         }
     }
-    return desc;
 }
+
 
 ovrResult __cdecl Hooked_GetInputState(ovrSession session, ovrControllerType controllerType, ovrInputState* inputState) {
     // If we have mappings, we need data from BOTH controllers (Touch) to perform the swap correctly.
@@ -414,34 +413,52 @@ ovrResult __cdecl Hooked_GetInputState(ovrSession session, ovrControllerType con
 }
 
 void InstallHooks() {
-    // The module name to look for depends on mode.
-    // If Revive was injected, our functions might be handled by LibOVRRT64_1.dll
-    // or we might need to hook them directly.
-    const char* moduleNames[] = {
-        "LibOVRRT64_1.dll",
-        nullptr
-    };
-
     HMODULE hLibOVR = nullptr;
     int attempts = 0;
     while (!hLibOVR && attempts < 500) {
-        for (int i = 0; moduleNames[i] != nullptr; i++) {
-            hLibOVR = GetModuleHandleA(moduleNames[i]);
-            if (hLibOVR) break;
-        }
-        if(!hLibOVR) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        hLibOVR = GetModuleHandleA("LibOVRRT64_1.dll");
+        if (!hLibOVR) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         attempts++;
     }
-    if (hLibOVR) {
-        Real_SubmitControllerVibration = (pf_SubmitControllerVibration)GetProcAddress(hLibOVR, "ovr_SubmitControllerVibration");
-        Real_GetHmdDesc = (pf_GetHmdDesc)GetProcAddress(hLibOVR, "ovr_GetHmdDesc");
-        Real_GetInputState = (pf_GetInputState)GetProcAddress(hLibOVR, "ovr_GetInputState");
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-        if (Real_SubmitControllerVibration) DetourAttach(&(PVOID&)Real_SubmitControllerVibration, Hooked_SubmitControllerVibration);
-        if (Real_GetHmdDesc) DetourAttach(&(PVOID&)Real_GetHmdDesc, Hooked_GetHmdDesc);
-        if (Real_GetInputState) DetourAttach(&(PVOID&)Real_GetInputState, Hooked_GetInputState);
-        DetourTransactionCommit();
+    if (!hLibOVR) return;
+
+    Real_SubmitControllerVibration = (pf_SubmitControllerVibration)GetProcAddress(hLibOVR, "ovr_SubmitControllerVibration");
+    Real_GetInputState = (pf_GetInputState)GetProcAddress(hLibOVR, "ovr_GetInputState");
+
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    if (Real_SubmitControllerVibration) DetourAttach(&(PVOID&)Real_SubmitControllerVibration, Hooked_SubmitControllerVibration);
+    if (Real_GetInputState) DetourAttach(&(PVOID&)Real_GetInputState, Hooked_GetInputState);
+    DetourTransactionCommit();
+
+    HMODULE hGame = GetModuleHandleA(nullptr);
+    BYTE* base = (BYTE*)hGame;
+    IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
+    IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    IMAGE_IMPORT_DESCRIPTOR* imp = (IMAGE_IMPORT_DESCRIPTOR*)(base +
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+
+    for (; imp->Name; imp++) {
+        const char* dllName = (const char*)(base + imp->Name);
+        if (_stricmp(dllName, "LibOVRRT64_1.dll") != 0) continue;
+
+        IMAGE_THUNK_DATA* origThunk = (IMAGE_THUNK_DATA*)(base + imp->OriginalFirstThunk);
+        IMAGE_THUNK_DATA* iatThunk = (IMAGE_THUNK_DATA*)(base + imp->FirstThunk);
+
+        for (; origThunk->u1.AddressOfData; origThunk++, iatThunk++) {
+            if (IMAGE_SNAP_BY_ORDINAL(origThunk->u1.Ordinal)) continue;
+            IMAGE_IMPORT_BY_NAME* ibn = (IMAGE_IMPORT_BY_NAME*)(base + origThunk->u1.AddressOfData);
+            if (strcmp((char*)ibn->Name, "ovr_GetHmdDesc") != 0) continue;
+
+            Real_GetHmdDesc = (pf_GetHmdDesc)iatThunk->u1.Function;
+
+            DWORD oldProtect;
+            VirtualProtect(&iatThunk->u1.Function, sizeof(PVOID), PAGE_READWRITE, &oldProtect);
+            iatThunk->u1.Function = (ULONG_PTR)Hooked_GetHmdDesc;
+            VirtualProtect(&iatThunk->u1.Function, sizeof(PVOID), oldProtect, &oldProtect);
+            break;
+        }
+        break;
     }
 }
 
