@@ -48,7 +48,19 @@ class VisualConfigurator:
     def __init__(self, root):
         self.root = root
         self.root.title("EchoVR Support Modding Tool")
-        self.root.geometry("850x900")
+        # Auto-resize based on screen resolution
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        
+        # Default size, capped at screen size with some margin
+        width = min(850, screen_width - 40)
+        height = min(900, screen_height - 100)
+        
+        # Center the window
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+        
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
         self.root.configure(bg=COLORS["bg"])
         
         # Set Icon
@@ -287,11 +299,56 @@ class VisualConfigurator:
             messagebox.showerror("Error", str(e))
 
     def setup_ui(self):
-        top = tk.Frame(self.root, bg=COLORS["bg"], pady=10)
+        # Create a container for the scrollable area to support all resolutions
+        container = tk.Frame(self.root, bg=COLORS["bg"])
+        container.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(container, bg=COLORS["bg"], highlightthickness=0)
+        v_scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        h_scrollbar = ttk.Scrollbar(container, orient="horizontal", command=canvas.xview)
+        
+        self.scrollable_frame = tk.Frame(canvas, bg=COLORS["bg"])
+        
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        
+        # Handle width correctly to support horizontal scrolling
+        def _on_canvas_configure(e):
+            req_width = self.scrollable_frame.winfo_reqwidth()
+            if e.width > req_width:
+                canvas.itemconfig(canvas_window, width=e.width)
+            else:
+                canvas.itemconfig(canvas_window, width=req_width)
+                
+        canvas.bind("<Configure>", _on_canvas_configure)
+        
+        canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        
+        # Use grid to layout canvas and scrollbars
+        canvas.grid(row=0, column=0, sticky="nsew")
+        v_scrollbar.grid(row=0, column=1, sticky="ns")
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
+        
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+        
+        # Bind mousewheel to scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Now use self.scrollable_frame instead of self.root
+        top = tk.Frame(self.scrollable_frame, bg=COLORS["bg"], pady=10)
         top.pack(fill="x")
         tk.Label(top, text="CONTROLLER REMAPPING", font=("Segoe UI", 18, "bold"), fg=COLORS["accent_cyan"], bg=COLORS["bg"]).pack()
 
-        canvas_frame = tk.Frame(self.root, bg=COLORS["bg"])
+        canvas_frame = tk.Frame(self.scrollable_frame, bg=COLORS["bg"])
         canvas_frame.pack(fill="both", expand=True)
         
         self.canvas = tk.Canvas(canvas_frame, width=800, height=400, bg=COLORS["bg"], highlightthickness=0)
@@ -333,7 +390,7 @@ class VisualConfigurator:
             
             self.canvas.create_window(x, y, window=f, anchor=anchor)
 
-        bottom = tk.Frame(self.root, bg=COLORS["bg"], padx=40)
+        bottom = tk.Frame(self.scrollable_frame, bg=COLORS["bg"], padx=40)
         bottom.pack(fill="x", pady=20)
 
         # Haptics
@@ -354,7 +411,7 @@ class VisualConfigurator:
                  bg=COLORS["bg"], fg=COLORS["text"], highlightthickness=0, troughcolor=COLORS["border"]).pack(fill="x")
 
         # SteamVR Mode Toggle
-        svr_frame = tk.Frame(self.root, bg=COLORS["card"], bd=1, highlightbackground=COLORS["accent_green"], padx=20, pady=10)
+        svr_frame = tk.Frame(self.scrollable_frame, bg=COLORS["card"], bd=1, highlightbackground=COLORS["accent_green"], padx=20, pady=10)
         svr_frame.pack(fill="x", padx=40, pady=(10, 5))
         
         tk.Label(svr_frame, text="⚡ STEAMVR MODE", font=("Segoe UI", 11, "bold"), fg=COLORS["accent_green"], bg=COLORS["card"]).pack(side="left")
@@ -370,7 +427,7 @@ class VisualConfigurator:
                  fg=COLORS["dim_text"], bg=COLORS["card"]).pack(side="right")
 
         # Stick Remap Mode
-        s_frame = tk.Frame(self.root, bg=COLORS["card"], bd=1, highlightbackground=COLORS["border"], padx=20, pady=10)
+        s_frame = tk.Frame(self.scrollable_frame, bg=COLORS["card"], bd=1, highlightbackground=COLORS["border"], padx=20, pady=10)
         s_frame.pack(fill="x", padx=40, pady=5)
         
         tk.Label(s_frame, text="STICK REMAP MODE", font=("Segoe UI", 10, "bold"), fg=COLORS["accent_cyan"], bg=COLORS["card"]).pack(side="left")
@@ -383,13 +440,14 @@ class VisualConfigurator:
                            font=("Segoe UI", 9)).pack(side="left", padx=15)
 
         # Save Button
-        save_btn = tk.Button(self.root, text="SAVE ALL CHANGES", font=("Segoe UI", 12, "bold"), 
+        save_btn = tk.Button(self.scrollable_frame, text="SAVE ALL CHANGES", font=("Segoe UI", 12, "bold"), 
                              bg=COLORS["accent_cyan"], fg=COLORS["bg"], activebackground=COLORS["accent_orange"],
                              command=self.save_config, relief="flat", pady=10)
         save_btn.pack(fill="x", side="bottom", padx=40, pady=10)
 
-        tk.Label(self.root, text="Made by he_is_the_cat", font=("Segoe UI", 9, "italic"), 
+        tk.Label(self.scrollable_frame, text="Made by he_is_the_cat", font=("Segoe UI", 9, "italic"), 
                  fg=COLORS["dim_text"], bg=COLORS["bg"]).pack(side="bottom", pady=5)
+
 
 if __name__ == "__main__":
     root = tk.Tk()
