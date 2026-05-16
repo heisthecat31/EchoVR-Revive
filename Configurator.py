@@ -76,6 +76,15 @@ class VisualConfigurator:
         self.steamvr_mode = tk.BooleanVar(value=False)
         self.revive_path = tk.StringVar(value="")
         
+        self.dz_lx = tk.DoubleVar(value=0.0)
+        self.dz_ly = tk.DoubleVar(value=0.0)
+        self.dz_rx = tk.DoubleVar(value=0.0)
+        self.dz_ry = tk.DoubleVar(value=0.0)
+        self.sens_lx = tk.DoubleVar(value=1.0)
+        self.sens_ly = tk.DoubleVar(value=1.0)
+        self.sens_rx = tk.DoubleVar(value=1.0)
+        self.sens_ry = tk.DoubleVar(value=1.0)
+        
         self.mappings = {name: tk.StringVar(value=name) for name in ALL_MAPPABLE}
         
         self.game_path = self.get_game_path()
@@ -265,6 +274,14 @@ class VisualConfigurator:
                         elif key == "StickRemapMode": self.stick_mode.set(val)
                         elif key == "SteamVRMode": self.steamvr_mode.set(val in ("1", "true"))
                         elif key == "RevivePath": self.revive_path.set(val)
+                        elif key == "DeadzoneLX": self.dz_lx.set(float(val))
+                        elif key == "DeadzoneLY": self.dz_ly.set(float(val))
+                        elif key == "DeadzoneRX": self.dz_rx.set(float(val))
+                        elif key == "DeadzoneRY": self.dz_ry.set(float(val))
+                        elif key == "SensLX": self.sens_lx.set(float(val))
+                        elif key == "SensLY": self.sens_ly.set(float(val))
+                        elif key == "SensRX": self.sens_rx.set(float(val))
+                        elif key == "SensRY": self.sens_ry.set(float(val))
                         elif key.startswith("Map_"):
                             btn = key[4:]
                             if btn in self.mappings:
@@ -282,6 +299,14 @@ class VisualConfigurator:
                 f"StickRemapMode = {self.stick_mode.get()}\n",
                 f"SteamVRMode = {'1' if self.steamvr_mode.get() else '0'}\n",
                 f"RevivePath = {self.revive_path.get()}\n",
+                f"DeadzoneLX = {self.dz_lx.get():.2f}\n",
+                f"DeadzoneLY = {self.dz_ly.get():.2f}\n",
+                f"DeadzoneRX = {self.dz_rx.get():.2f}\n",
+                f"DeadzoneRY = {self.dz_ry.get():.2f}\n",
+                f"SensLX = {self.sens_lx.get():.2f}\n",
+                f"SensLY = {self.sens_ly.get():.2f}\n",
+                f"SensRX = {self.sens_rx.get():.2f}\n",
+                f"SensRY = {self.sens_ry.get():.2f}\n",
                 "\n# Button & Analog Mappings\n"
             ]
             
@@ -425,6 +450,46 @@ class VisualConfigurator:
         
         tk.Label(svr_frame, text="Redirects Oculus → SteamVR/OpenXR", font=("Segoe UI", 8), 
                  fg=COLORS["dim_text"], bg=COLORS["card"]).pack(side="right")
+
+        # Stick Deadzones & Sensitivity
+        stick_settings = tk.Frame(self.scrollable_frame, bg=COLORS["card"], bd=1, highlightbackground=COLORS["border"], padx=20, pady=10)
+        stick_settings.pack(fill="x", padx=40, pady=5)
+        
+        tk.Label(stick_settings, text="STICK DEADZONES & SENSITIVITY", font=("Segoe UI", 11, "bold"), fg=COLORS["accent_cyan"], bg=COLORS["card"]).pack(anchor="w", pady=(0, 10))
+        
+        # Grid for stick settings
+        grid_frame = tk.Frame(stick_settings, bg=COLORS["card"])
+        grid_frame.pack(fill="x")
+        
+        # Left Stick column
+        l_stick = tk.Frame(grid_frame, bg=COLORS["card"])
+        l_stick.pack(side="left", fill="x", expand=True, padx=10)
+        tk.Label(l_stick, text="LEFT STICK", fg=COLORS["accent_cyan"], bg=COLORS["card"], font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        
+        # Right Stick column
+        r_stick = tk.Frame(grid_frame, bg=COLORS["card"])
+        r_stick.pack(side="left", fill="x", expand=True, padx=10)
+        tk.Label(r_stick, text="RIGHT STICK", fg=COLORS["accent_cyan"], bg=COLORS["card"], font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        
+        # Helper to add slider
+        def add_stick_slider(parent, label, var, from_val, to_val, res):
+            f = tk.Frame(parent, bg=COLORS["card"])
+            f.pack(fill="x", pady=2)
+            tk.Label(f, text=label, fg=COLORS["dim_text"], bg=COLORS["card"], font=("Segoe UI", 8)).pack(anchor="w")
+            tk.Scale(f, from_=from_val, to=to_val, resolution=res, orient="horizontal", variable=var,
+                     bg=COLORS["card"], fg=COLORS["text"], highlightthickness=0, troughcolor=COLORS["border"]).pack(fill="x")
+
+        # Add sliders to Left Stick
+        add_stick_slider(l_stick, "Deadzone X", self.dz_lx, 0.0, 0.5, 0.01)
+        add_stick_slider(l_stick, "Deadzone Y", self.dz_ly, 0.0, 0.5, 0.01)
+        add_stick_slider(l_stick, "Sensitivity X", self.sens_lx, 0.1, 5.0, 0.1)
+        add_stick_slider(l_stick, "Sensitivity Y", self.sens_ly, 0.1, 5.0, 0.1)
+        
+        # Add sliders to Right Stick
+        add_stick_slider(r_stick, "Deadzone X", self.dz_rx, 0.0, 0.5, 0.01)
+        add_stick_slider(r_stick, "Deadzone Y", self.dz_ry, 0.0, 0.5, 0.01)
+        add_stick_slider(r_stick, "Sensitivity X", self.sens_rx, 0.1, 5.0, 0.1)
+        add_stick_slider(r_stick, "Sensitivity Y", self.sens_ry, 0.1, 5.0, 0.1)
 
         # Stick Remap Mode
         s_frame = tk.Frame(self.scrollable_frame, bg=COLORS["card"], bd=1, highlightbackground=COLORS["border"], padx=20, pady=10)

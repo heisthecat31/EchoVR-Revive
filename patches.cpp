@@ -30,6 +30,16 @@ float g_HapticStrength = 1.4f;
 float g_FovMultiplierX = 1.0f;
 float g_FovMultiplierY = 1.0f;
 bool  g_SteamVRMode    = false;  // When true, redirect LibOVR to Revive
+
+// Stick Configuration
+float g_DeadzoneLX = 0.0f;
+float g_DeadzoneLY = 0.0f;
+float g_DeadzoneRX = 0.0f;
+float g_DeadzoneRY = 0.0f;
+float g_SensLX     = 1.0f;
+float g_SensLY     = 1.0f;
+float g_SensRX     = 1.0f;
+float g_SensRY     = 1.0f;
 std::wstring g_RevivePath;       // Custom Revive installation path
 
 // =============================================================
@@ -264,6 +274,14 @@ void LoadConfig() {
                 else if (key == "FovMultiplierY") g_FovMultiplierY = std::stof(value);
                 else if (key == "StickRemapMode") g_StickRemapMode = std::stoi(value);
                 else if (key == "SteamVRMode") g_SteamVRMode = (value == "1" || value == "true");
+                else if (key == "DeadzoneLX") g_DeadzoneLX = std::stof(value);
+                else if (key == "DeadzoneLY") g_DeadzoneLY = std::stof(value);
+                else if (key == "DeadzoneRX") g_DeadzoneRX = std::stof(value);
+                else if (key == "DeadzoneRY") g_DeadzoneRY = std::stof(value);
+                else if (key == "SensLX")     g_SensLX = std::stof(value);
+                else if (key == "SensLY")     g_SensLY = std::stof(value);
+                else if (key == "SensRX")     g_SensRX = std::stof(value);
+                else if (key == "SensRY")     g_SensRY = std::stof(value);
                 else if (key == "RevivePath") {
                     int len = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, NULL, 0);
                     if (len > 0) {
@@ -466,6 +484,32 @@ ovrResult __cdecl Hooked_GetInputState(ovrSession session, ovrControllerType con
                 inputState->ThumbstickNoDeadzone[m.target] = newStickND[m.target];
                 inputState->ThumbstickRaw[m.target] = newStickRaw[m.target];
             }
+        }
+
+        // --- STICK DEADZONES & SENSITIVITY ---
+        for (int i = 0; i < 2; ++i) {
+            float dzX = (i == 0) ? g_DeadzoneLX : g_DeadzoneRX;
+            float dzY = (i == 0) ? g_DeadzoneLY : g_DeadzoneRY;
+            float sensX = (i == 0) ? g_SensLX : g_SensRX;
+            float sensY = (i == 0) ? g_SensLY : g_SensRY;
+
+            // Apply independent X and Y deadzones FIRST
+            if (fabs(inputState->Thumbstick[i].x) < dzX) {
+                inputState->Thumbstick[i].x = 0.0f;
+            }
+            if (fabs(inputState->Thumbstick[i].y) < dzY) {
+                inputState->Thumbstick[i].y = 0.0f;
+            }
+
+            // Apply independent X and Y sensitivity AFTER
+            inputState->Thumbstick[i].x *= sensX;
+            inputState->Thumbstick[i].y *= sensY;
+
+            // Clamp results to [-1.0, 1.0]
+            if (inputState->Thumbstick[i].x > 1.0f) inputState->Thumbstick[i].x = 1.0f;
+            if (inputState->Thumbstick[i].x < -1.0f) inputState->Thumbstick[i].x = -1.0f;
+            if (inputState->Thumbstick[i].y > 1.0f) inputState->Thumbstick[i].y = 1.0f;
+            if (inputState->Thumbstick[i].y < -1.0f) inputState->Thumbstick[i].y = -1.0f;
         }
     }
     return result;
